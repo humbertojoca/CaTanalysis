@@ -17,6 +17,7 @@ import tkinter as tk
 from tkinter import filedialog
 
 from ca_analyzer import CalciumAnalyzer, AnalysisConfig
+from config_manager import ConfigManager
 
 
 def select_files() -> list:
@@ -26,8 +27,9 @@ def select_files() -> list:
     
     filenames = filedialog.askopenfilenames(
         parent=root,
-        filetypes=[('TIFF Image', '*.tif;*.tiff'), ('All files', '*.*')],
-        title='Choose TIFF Image(s)'
+        filetypes=[('TIFF Image', '*.tif;*.tiff'), ('Nikon Image', '*.nd2'),
+                    ('Zeiss Image', '*.czi;*.lsm'),('All files', '*.*')],
+        title='Choose Image(s) Files'
     )
     
     if not filenames:
@@ -39,20 +41,15 @@ def select_files() -> list:
 def main():
     """Main analysis workflow."""
     
-    # Configure analysis parameters
-    config = AnalysisConfig(
-        fluo_index=0,
-        linescan_speed=1.87,  # ms per line
-        filter_kernelsize=5,
-        mode='single',  # 'single' or 'ratio'
-        analyze_synchrony=False,
-        show_images=True,
-        max_ff0=8.0,
-        export_csv=False,
-        export_npz=False,
-        peak_prominence_ratio=0.45,
-        min_peak_distance=200
-    )
+    # Load configuration from JSON file
+    config_manager = ConfigManager()
+    config = config_manager.load_config()
+    print(f"\nUsing configuration from: {config_manager.get_config_path()}")
+    print(f"  - Linescan speed: {config.linescan_speed} ms/line")
+    print(f"  - Mode: {config.mode}")
+    print(f"  - Analyze synchrony: {config.analyze_synchrony}")
+    print(f"  - Peak prominence ratio: {config.peak_prominence_ratio}")
+    print(f"  - Min peak distance: {config.min_peak_distance}\n")
     
     # Select files
     print("Select TIFF image(s) for analysis...")

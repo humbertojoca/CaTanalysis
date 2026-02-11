@@ -29,6 +29,8 @@ class AnalysisConfig:
     
     # Image parameters
     fluo_index: int = 0
+    numerator_index: int = 0
+    denominator_index: int = 1
     linescan_speed: float = 1.87  # ms per line
     filter_kernelsize: int = 5
     
@@ -48,7 +50,6 @@ class AnalysisConfig:
     
     # Export
     export_csv: bool = False
-    export_npz: bool = False
     
     @property
     def sampling_rate(self) -> float:
@@ -75,7 +76,26 @@ class CalciumImage:
         self.metadata = self._image.metadata
         
         # Extract calcium fluorescence channel
-        self.raw_data = np.transpose(self._image[config.fluo_index])
+        if config.mode == 'single':
+            if self._image.shape[0] > 1:
+                self.raw_data = np.array(self._image[config.fluo_index])
+            else:
+                self.raw_data = np.array(self._image[0])
+            
+            if self.raw_data.shape[0] > self.raw_data.shape[1]:
+                self.raw_data = np.transpose(self.raw_data, (1, 0))
+        elif config.mode == 'ratio':
+            if self._image.shape[0] > 1:
+                self.numerator = np.array(self._image[config.numerator_index])
+                self.denominator = np.array(self._image[config.denominator_index])
+            else:
+                self.numerator = np.array(self._image[0])
+                self.denominator = np.array(self._image[1])
+            
+            if self.numerator.shape[0] > self.numerator.shape[1]:
+                self.numerator = np.transpose(self.numerator, (1, 0))
+                self.denominator = np.transpose(self.denominator, (1, 0))
+
         self.voxel_size = self.metadata.PixelsPhysicalSizeX(0)  # μm
         
         # Processed data (will be set during preprocessing)
@@ -93,7 +113,12 @@ class CalciumImage:
         """Apply median filter to reduce noise."""
         kernel_size = self.config.filter_kernelsize
         footprint = morphology.footprint_rectangle((kernel_size, kernel_size))
-        self.filtered_data = filters.median(self.raw_data, footprint)
+        if self.config.mode == 'single':
+            self.filtered_data = filters.median(self.raw_data, footprint)
+        elif self.config.mode == 'ratio':
+            self.filtered_num = filters.median(self.numerator, footprint)
+            self.filtered_den = filters.median(self.denominator, footprint)
+            self.filtered_data = self.filtered_num / self.filtered_den
         return self
     
     def select_cell_roi(self, ylimits: Optional[Tuple[float, float]] = None) -> 'CalciumImage':
@@ -163,7 +188,10 @@ class CalciumImage:
         self.signal_1d = signal.savgol_filter(self.signal_1d, 21, 3)
         
         # Normalize 2D image
-        self.normalized_data = self.cropped_data / self.baseline_value
+        if self.config.mode == 'single':
+            self.normalized_data = self.cropped_data / self.baseline_value
+        elif self.config.mode == 'ratio':
+            self.normalized_data = self.cropped_data
         
         return self
     
@@ -208,7 +236,7 @@ class TransientMetrics:
             self.rise_time_10_90, self.decay_time_50, self.decay_time_90
         ])
         
-        if include_synchrony and self.delay_mean is not None:
+        if include_synchrony and self.mode == 'single' and self.delay_mean is not None:
             return np.concatenate([base, [self.delay_mean, self.delay_std, self.synchrony_index]])
         return base
     
@@ -219,7 +247,7 @@ class TransientMetrics:
                 'Ca Amplitude', 'Ca Rise Time 10-90%(ms)', 
                 'Ca Decay time 50%(ms)', 'Ca Decay time 90%(ms)']
         
-        if include_synchrony:
+        if include_synchrony and self.mode == 'single':
             base.extend(['Delay(ms)', 'SD(ms)', 'SI'])
         return base
 
@@ -244,6 +272,7 @@ class CalciumTransient:
         self.mode = mode
         
         self.metrics: Optional[TransientMetrics] = None
+        self.delay_times: Optional[np.ndarray] = None  # Store delay times for synchrony analysis
         
     def analyze(self, config: AnalysisConfig, linescan: Optional[np.ndarray] = None) -> Optional[TransientMetrics]:
         """
@@ -300,7 +329,7 @@ class CalciumTransient:
         )
         
         # Analyze synchrony if linescan provided
-        if linescan is not None and config.analyze_synchrony:
+        if linescan is not None and config.analyze_synchrony and self.mode == 'single':
             self._analyze_synchrony(linescan, baseline, peak_idx, amplitude)
         
         return self.metrics
@@ -350,6 +379,9 @@ class CalciumTransient:
                 delay_times[r] = delay_time if delay_time >= 10 else np.nan
             else:
                 delay_times[r] = np.nan
+        
+        # Store delay times for visualization
+        self.delay_times = delay_times
         
         # Calculate synchrony index
         delay_mean = np.nanmean(delay_times)
@@ -529,12 +561,12 @@ class CalciumAnalyzer:
     
     def export_results(self, output_path: Optional[str] = None) -> 'CalciumAnalyzer':
         """
-        Export analysis results to CSV and NPZ files.
+        Export analysis results to CSV files.
         
         Args:
             output_path: Optional output path. If None, uses input image path.
         """
-        if not (self.config.export_csv or self.config.export_npz):
+        if not (self.config.export_csv):
             return self
         
         if self.results is None or self.image is None:
@@ -555,16 +587,6 @@ class CalciumAnalyzer:
             np.savetxt(csv_path, self.results, delimiter=',',
                       header=','.join(header), fmt='%1.3f', comments='')
             print(f"Results exported to {csv_path}")
-        
-        # Export NPZ
-        if self.config.export_npz:
-            npz_path = output_path.with_suffix('.npz')
-            np.savez_compressed(npz_path,
-                              signal=self.image.signal_1d,
-                              data=self.results,
-                              sampling=self.config.sampling_rate,
-                              header=header)
-            print(f"Data exported to {npz_path}")
         
         return self
     

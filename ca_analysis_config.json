@@ -1,0 +1,16 @@
+{
+    "fluo_index": 0,
+    "numerator_index": 1,
+    "denominator_index": 2,
+    "linescan_speed": 1.87,
+    "filter_kernelsize": 5,
+    "mode": "single",
+    "analyze_synchrony": true,
+    "peak_prominence_ratio": 0.45,
+    "peak_prominence_single": 0.8,
+    "peak_prominence_sync": 0.9,
+    "min_peak_distance": 200,
+    "show_images": true,
+    "max_ff0": 8.0,
+    "export_csv": false
+}

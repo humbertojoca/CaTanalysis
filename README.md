@@ -1,66 +1,74 @@
-# Calcium Transient Analysis Framework v2 (Jan/2026)
+# Calcium Transient Analysis Framework v3 (Feb/2026)
 
 A Python framework for analyzing calcium transients from linescan microscopy images.
 
 ## 🎯 Features
-- **Peak Detection**: Uses scipy's `find_peaks` with prominence-based detection
-- **Synchrony Analysis**: Optional spatial synchrony analysis from linescan data
-- **ROI Selection**: User-friendly region selection with matplotlib
-- **Export Options**: CSV and NPZ export formats
+- **Modern GUI**: Built with PySide6 for interactive and user-friendly analysis.
+- **Interactive ROI Selection**: Precise control over cell boundaries (Y-axis) and baseline regions (X-axis) with sliders and spinboxes.
+- **Ratio Mode**: Support for multi-channel ratio analysis (e.g., Fura-2 or Ratiometric indicators).
+- **Multi-format Support**: Loads any image supported by Bio-formats, including **ND2 (Nikon)**, **CZI/LSM (Zeiss)**, and standard **TIFF**.
+- **Peak Detection**: Uses scipy's `find_peaks` with prominence-based detection.
+- **Synchrony Analysis**: Spatial synchrony analysis with activation delay maps (single-wavelength mode).
+- **Export Options**: Automatic CSV export of all kinetic parameters.
 
 ## 📦 Installation
 
 ### Requirements
 
 ```bash
-pip install numpy scipy matplotlib scikit-image pims jpype1 seaborn
+pip install numpy scipy matplotlib scikit-image pims jpype1 PySide6
 ```
 The code uses `pims.Bioformats` which requires Java. Make sure you have Java installed.
 
-### Core Classes
+## 🚀 Usage
 
-#### 1. `AnalysisConfig`
-Configuration dataclass containing all analysis parameters:
-- Image parameters (channel index, linescan speed, filter size)
-- Peak detection thresholds
-- Visualization settings
-- Export options
+### 1. Graphical User Interface (Recommended)
+Launch the modern GUI for an interactive workflow:
+```bash
+python main_gui.py
+```
+- **Configuration**: Adjust all analysis parameters (sampling, filters, thresholds) in the left panel.
+- **ROI Selection**: Use the sliders in the "Image Viewer" tab to select cell limits and baseline regions.
+- **Visualization**: View signal plots, normalized linescan images, and synchrony maps in dedicated tabs.
 
-#### 2. `CalciumImage`
-Handles image loading and preprocessing:
-- Loads images via pims/Bioformats
-- Applies median filtering
-- Interactive ROI selection (cell boundaries and baseline)
-- F/F0 normalization
-- Signal smoothing with Savitzky-Golay filter
+### 2. Command Line Interface
+Run batch analysis on multiple files:
+```bash
+python main.py
+```
+This will open a file dialog to select images and process them using the settings defined in `ca_analysis_config.json`.
 
-#### 3. `CalciumTransient`
-Represents a single calcium transient:
-- Peak detection
-- Rise time calculation (10-90%)
-- Decay time calculation (50%, 90%)
-- Optional synchrony analysis
+---
 
-#### 4. `TransientMetrics`
-Dataclass for storing analysis results:
-- Temporal indices (begin, end)
-- Frequency
-- Baseline, peak, amplitude
-- Kinetic parameters (rise/decay times)
-- Optional synchrony metrics (delay, SD, synchrony index)
+## 🔧 Configuration Options
 
-#### 5. `CalciumAnalyzer`
-Main orchestrator class:
-- Manages the complete analysis workflow
-- Finds and analyzes multiple transients
-- Visualization
-- Results export
+The framework uses `ca_analysis_config.json` to persist settings.
 
-## 📊 Output
+### Key Parameters
 
-### Results Array Structure
+- **Image settings**: `fluo_index` (for single mode), `numerator_index`, `denominator_index` (for ratio mode), `linescan_speed` (ms/line).
+- **Analysis mode**: `'single'` or `'ratio'`.
+- **Synchrony**: `analyze_synchrony` (True/False).
+- **Peak detection**: `peak_prominence_ratio`, `min_peak_distance`.
+- **Visualization**: `max_ff0` (clipping for colorbar).
 
-Each row contains metrics for one transient:
+---
+
+## 📂 Core Components
+
+### 1. `CalciumAnalyzer`
+Main class that manages the complete analysis workflow, from loading to export.
+
+### 2. `CalciumImage`
+Handles Bio-formats loading, median filtering, and ROI-based normalization (F/F0).
+
+### 3. `CalciumTransient`
+Analyzes individual transients to extract:
+- **Rise Time**: 10-90% interval.
+- **Decay Times**: 50% and 90% (tau/kinetics).
+- **Synchrony Index**: Spatial variation in activation delays.
+
+## 📊 Output Results
 
 | Column | Metric | Unit |
 |--------|--------|------|
@@ -77,58 +85,11 @@ Each row contains metrics for one transient:
 | 10* | Delay SD | ms |
 | 11* | Synchrony index | - |
 
-\* Only when `analyze_synchrony=True`
+\* Synchrony metrics available in `'single'` mode.
 
-### Export Formats
-
-**CSV**: Human-readable format with headers
-```csv
-Begin,End,Freq (Hz),Ca Baseline,Ca Peak,Ca Amplitude,...
-50,450,1.0,1.02,3.45,2.43,45.2,120.5,350.2
-```
-
-**NPZ**: Compressed numpy format containing:
-- `signal`: 1D normalized calcium signal
-- `data`: Results array
-- `sampling`: Sampling rate
-- `header`: Column names
-
-## 🔧 Configuration Options
-
-### Key Parameters
-
-```python
-config = AnalysisConfig(
-    # Image settings
-    fluo_index=0,              # Fluorescence channel (0-indexed)
-    linescan_speed=1.87,       # ms per scan line
-    filter_kernelsize=5,       # Median filter kernel size
-    
-    # Analysis mode
-    mode='single',             # 'single' or 'ratio' wavelength
-    analyze_synchrony=False,   # Enable spatial synchrony analysis
-    
-    # Peak detection
-    peak_prominence_ratio=0.45,  # Prominence for finding transients
-    min_peak_distance=200,       # Minimum distance between peaks
-    
-    # Visualization
-    show_images=True,          # Display plots
-    max_ff0=8.0,              # Max F/F0 for colormap
-    
-    # Export
-    export_csv=True,          # Export to CSV
-    export_npz=True           # Export to NPZ
-)
-```
-
-### Java Warnings
+## ⚠️ Java Warnings
 If you see Java native access warnings:
 ```
 WARNING: A restricted method in java.lang.System has been called
 ```
-
-The code automatically sets the environment variable to suppress these:
-```python
-os.environ['JAVA_TOOL_OPTIONS'] = '--enable-native-access=ALL-UNNAMED'
-```
+The code automatically suppresses these by setting `JAVA_TOOL_OPTIONS`.
