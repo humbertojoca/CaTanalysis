@@ -16,7 +16,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog
 
-from ca_analyzer import CalciumAnalyzer, AnalysisConfig
+from ca_analyzer import CalciumAnalyzer
 from config_manager import ConfigManager
 
 

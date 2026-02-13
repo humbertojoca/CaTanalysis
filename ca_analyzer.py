@@ -8,7 +8,6 @@ Author: hjoca
 Refactored: 2026-01-13
 """
 
-import os
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List
 from pathlib import Path
@@ -228,7 +227,7 @@ class TransientMetrics:
     delay_std: Optional[float] = None   # ms
     synchrony_index: Optional[float] = None
     
-    def to_array(self, include_synchrony: bool = False) -> np.ndarray:
+    def to_array(self, include_synchrony: bool = False, mode: str = 'single') -> np.ndarray:
         """Convert metrics to numpy array."""
         base = np.array([
             self.begin_idx, self.end_idx, self.frequency,
@@ -236,18 +235,18 @@ class TransientMetrics:
             self.rise_time_10_90, self.decay_time_50, self.decay_time_90
         ])
         
-        if include_synchrony and self.mode == 'single' and self.delay_mean is not None:
+        if include_synchrony and mode == 'single' and self.delay_mean is not None:
             return np.concatenate([base, [self.delay_mean, self.delay_std, self.synchrony_index]])
         return base
     
     @staticmethod
-    def get_header(include_synchrony: bool = False) -> List[str]:
+    def get_header(include_synchrony: bool = False, mode: str = 'single') -> List[str]:
         """Get CSV header for metrics."""
         base = ['Begin', 'End', 'Freq (Hz)', 'Ca Baseline', 'Ca Peak',
                 'Ca Amplitude', 'Ca Rise Time 10-90%(ms)', 
                 'Ca Decay time 50%(ms)', 'Ca Decay time 90%(ms)']
         
-        if include_synchrony and self.mode == 'single':
+        if include_synchrony and mode == 'single':
             base.extend(['Delay(ms)', 'SD(ms)', 'SI'])
         return base
 
@@ -329,7 +328,7 @@ class CalciumTransient:
         )
         
         # Analyze synchrony if linescan provided
-        if linescan is not None and config.analyze_synchrony and self.mode == 'single':
+        if linescan is not None and config.analyze_synchrony:
             self._analyze_synchrony(linescan, baseline, peak_idx, amplitude)
         
         return self.metrics

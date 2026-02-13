@@ -23,18 +23,16 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-from matplotlib.patches import Rectangle
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QLineEdit, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QComboBox, QGroupBox, QFileDialog, QTableWidget,
-    QTableWidgetItem, QTabWidget, QDockWidget, QProgressBar,
-    QStatusBar, QMenuBar, QMenu, QToolBar, QMessageBox, QSplitter,
+    QPushButton, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox, 
+    QGroupBox, QFileDialog, QTableWidget, QTableWidgetItem, 
+    QTabWidget,  QProgressBar, QStatusBar, QToolBar, QMessageBox, 
     QScrollArea, QFormLayout, QTextEdit, QSlider
 )
-from PySide6.QtCore import Qt, Signal, QThread, Slot, QObject
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtCore import Qt, Signal,  Slot, QObject
+from PySide6.QtGui import QAction
 
 from ca_analyzer import CalciumAnalyzer, AnalysisConfig
 from plot_style import apply_calcium_style

@@ -1,4 +1,4 @@
-# Calcium Transient Analysis Framework v3 (Feb/2026)
+# Calcium Transient Analysis Framework v3.01 (Feb/2026)
 
 A Python framework for analyzing calcium transients from linescan microscopy images.
 
@@ -16,7 +16,7 @@ A Python framework for analyzing calcium transients from linescan microscopy ima
 ### Requirements
 
 ```bash
-pip install numpy scipy matplotlib scikit-image pims jpype1 PySide6
+pip install numpy scipy matplotlib scikit-image pims jpype1 PySide6 seaborn
 ```
 The code uses `pims.Bioformats` which requires Java. Make sure you have Java installed.
 
