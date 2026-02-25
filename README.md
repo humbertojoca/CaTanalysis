@@ -1,4 +1,4 @@
-# Calcium Transient Analysis Framework v3.01 (Feb/2026)
+# Calcium Transient Analysis Framework v3.02 (Feb/2026)
 
 A Python framework for analyzing calcium transients from linescan microscopy images.
 

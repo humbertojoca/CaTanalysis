@@ -38,10 +38,10 @@ class AnalysisConfig:
     analyze_synchrony: bool = False
     
     # Peak detection thresholds
-    peak_prominence_ratio: float = 0.45  # For find_peaks
-    peak_prominence_single: float = 0.8  # For single transient
+    peak_prominence_ratio: float = 0.4  # For find_peaks
+    peak_prominence_single: float = 0.4  # For single transient
     peak_prominence_sync: float = 0.9    # For synchrony analysis
-    min_peak_distance: int = 200
+    min_peak_distance: int = 50
     
     # Visualization
     show_images: bool = True
@@ -73,9 +73,11 @@ class CalciumImage:
         # Load image
         self._image = pims.Bioformats(str(filepath))
         self.metadata = self._image.metadata
+
+
         
         # Extract calcium fluorescence channel
-        if config.mode == 'single':
+        if config.mode == 'single':          
             if self._image.shape[0] > 1:
                 self.raw_data = np.array(self._image[config.fluo_index])
             else:
@@ -83,6 +85,7 @@ class CalciumImage:
             
             if self.raw_data.shape[0] > self.raw_data.shape[1]:
                 self.raw_data = np.transpose(self.raw_data, (1, 0))
+
         elif config.mode == 'ratio':
             if self._image.shape[0] > 1:
                 self.numerator = np.array(self._image[config.numerator_index])
@@ -221,6 +224,7 @@ class TransientMetrics:
     rise_time_10_90: float  # ms
     decay_time_50: float    # ms
     decay_time_90: float    # ms
+    peak_idx: int          # Global index of the peak
     
     # Synchrony metrics (optional)
     delay_mean: Optional[float] = None  # ms
@@ -232,7 +236,8 @@ class TransientMetrics:
         base = np.array([
             self.begin_idx, self.end_idx, self.frequency,
             self.baseline, self.peak, self.amplitude,
-            self.rise_time_10_90, self.decay_time_50, self.decay_time_90
+            self.rise_time_10_90, self.decay_time_50, self.decay_time_90,
+            self.peak_idx
         ])
         
         if include_synchrony and mode == 'single' and self.delay_mean is not None:
@@ -244,7 +249,7 @@ class TransientMetrics:
         """Get CSV header for metrics."""
         base = ['Begin', 'End', 'Freq (Hz)', 'Ca Baseline', 'Ca Peak',
                 'Ca Amplitude', 'Ca Rise Time 10-90%(ms)', 
-                'Ca Decay time 50%(ms)', 'Ca Decay time 90%(ms)']
+                'Ca Decay time 50%(ms)', 'Ca Decay time 90%(ms)', 'Ca Peak Idx']
         
         if include_synchrony and mode == 'single':
             base.extend(['Delay(ms)', 'SD(ms)', 'SI'])
@@ -272,6 +277,7 @@ class CalciumTransient:
         
         self.metrics: Optional[TransientMetrics] = None
         self.delay_times: Optional[np.ndarray] = None  # Store delay times for synchrony analysis
+        self.start_idx_global: int = 0                 # Set by analyzer
         
     def analyze(self, config: AnalysisConfig, linescan: Optional[np.ndarray] = None) -> Optional[TransientMetrics]:
         """
@@ -286,17 +292,17 @@ class CalciumTransient:
         """
         # Determine threshold based on mode
         if self.mode == 'ratio':
-            prominence = 0.9
+            prominence = config.peak_prominence_ratio
         else:
-            prominence = 0.8
+            prominence = config.peak_prominence_single
         
         # Calculate baseline
         baseline = np.mean(self.signal[:10])
         
         # Detect peaks
         peaks, _ = signal.find_peaks(self.signal, 
-                                    prominence=prominence * np.ptp(self.signal),
-                                    distance=100)
+                                    prominence=prominence,
+                                    distance=config.min_peak_distance)
         
         # Validate single peak
         if len(peaks) != 1:
@@ -324,7 +330,8 @@ class CalciumTransient:
             amplitude=amplitude,
             rise_time_10_90=rise_time,
             decay_time_50=decay_50,
-            decay_time_90=decay_90
+            decay_time_90=decay_90,
+            peak_idx=int(peak_idx + self.start_idx_global)
         )
         
         # Analyze synchrony if linescan provided
@@ -433,17 +440,18 @@ class CalciumAnalyzer:
         
         # Determine threshold based on mode
         if self.config.mode == 'ratio':
-            prominence = 0.6
-        else:
             prominence = self.config.peak_prominence_ratio
+        else:
+            prominence = self.config.peak_prominence_single
         
         # Find peaks
         signal_1d = self.image.signal_1d
         peaks, _ = signal.find_peaks(signal_1d,
-                                    prominence=prominence * np.ptp(signal_1d),
+                                    prominence=prominence,
                                     distance=self.config.min_peak_distance)
         
         n_peaks = len(peaks)
+        print(f'Found {n_peaks} transients')
         if n_peaks < 1:
             print('No transients found')
             return self
@@ -453,7 +461,7 @@ class CalciumAnalyzer:
         n_analyze = n_peaks - 1 if skip_last else n_peaks
         
         # Prepare results array
-        n_cols = 12 if self.config.analyze_synchrony else 9
+        n_cols = 13 if self.config.analyze_synchrony else 10
         self.results = np.zeros((n_analyze, n_cols))
         
         # Analyze each transient
@@ -471,7 +479,7 @@ class CalciumAnalyzer:
                 freq = max(freq, 1)
             else:
                 freq = 1
-            
+
             # Extract transient window
             duration = int(((1000 / freq) * 0.8) / (1 / self.config.sampling_rate * 1000))
             start_idx = peak_idx - 50
@@ -482,6 +490,7 @@ class CalciumAnalyzer:
             # Create and analyze transient
             transient = CalciumTransient(transient_signal, self.config.sampling_rate, 
                                         i, self.config.mode)
+            transient.start_idx_global = start_idx
             
             # Get linescan crop if needed
             linescan_crop = None
@@ -533,6 +542,13 @@ class CalciumAnalyzer:
                     self.image.signal_1d[end_indices],
                     label='End', marker='o', color='g',
                     fillstyle='none', linestyle='none')
+            
+            # Plot peaks
+            peak_indices = self.results[valid_rows, 9].astype(int)
+            plt.plot(time_axis[peak_indices],
+                    self.image.signal_1d[peak_indices],
+                    label='Peak', marker='v', color='m',
+                    markersize=8, linestyle='none')
         
         plt.xlim(0, 3000)
         plt.xlabel('Time (ms)')

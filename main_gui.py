@@ -509,12 +509,17 @@ class ResultsPanel(QWidget):
         valid_rows = ~np.isnan(self.analyzer.results[:, 0])
         if np.any(valid_rows):
             begin_indices = self.analyzer.results[valid_rows, 0].astype(int)
-            end_indices = self.analyzer.results[valid_rows, 1].astype(int)
-            
             ax.plot(time_axis[begin_indices], signal[begin_indices],
                    'ro', label='Begin', markersize=8, fillstyle='none')
+            end_indices = self.analyzer.results[valid_rows, 1].astype(int)
+            
             ax.plot(time_axis[end_indices], signal[end_indices],
                    'go', label='End', markersize=8, fillstyle='none')
+            
+            # Mark peaks
+            peak_indices = self.analyzer.results[valid_rows, 9].astype(int)
+            ax.plot(time_axis[peak_indices], signal[peak_indices],
+                   'mv', label='Peak', markersize=8)
         
         ax.set_xlabel('Time (ms)')
         ax.set_ylabel('Ca Signal (F/F0)')
@@ -635,11 +640,11 @@ class ResultsPanel(QWidget):
             summary += f"<p><b>Mean decay time (50%):</b> {np.nanmean(valid_results[:, 7]):.2f} ms</p>\n"
             summary += f"<p><b>Mean decay time (90%):</b> {np.nanmean(valid_results[:, 8]):.2f} ms</p>\n"
             
-            if self.analyzer.config.analyze_synchrony and valid_results.shape[1] > 9:
+            if self.analyzer.config.analyze_synchrony and valid_results.shape[1] > 10:
                 summary += "<h3>Synchrony Metrics</h3>\n"
-                summary += f"<p><b>Mean delay:</b> {np.nanmean(valid_results[:, 9]):.2f} ms</p>\n"
-                summary += f"<p><b>Delay SD:</b> {np.nanmean(valid_results[:, 10]):.2f} ms</p>\n"
-                summary += f"<p><b>Synchrony Index:</b> {np.nanmean(valid_results[:, 11]):.3f}</p>\n"
+                summary += f"<p><b>Mean delay:</b> {np.nanmean(valid_results[:, 10]):.2f} ms</p>\n"
+                summary += f"<p><b>Delay SD:</b> {np.nanmean(valid_results[:, 11]):.2f} ms</p>\n"
+                summary += f"<p><b>Synchrony Index:</b> {np.nanmean(valid_results[:, 12]):.3f}</p>\n"
         
         self.summary_text.setHtml(summary)
 
