@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from scipy import signal
 import skimage.filters as filters
 import skimage.morphology as morphology
-import pims
+import pims, math
 
 from plot_style import apply_calcium_style
 
@@ -482,7 +482,23 @@ class CalciumAnalyzer:
 
             # Extract transient window
             duration = int(((1000 / freq) * 0.8) / (1 / self.config.sampling_rate * 1000))
-            start_idx = peak_idx - 50
+            initial_offset = int(math.ceil(200-(15*freq)) / (1 / self.config.sampling_rate * 1000))
+            begin_idx = peak_idx - math.ceil(initial_offset)
+            begin_signal = signal_1d[begin_idx:peak_idx]
+            fd_signal = np.diff(begin_signal)
+            fd_signal = fd_signal / np.max(fd_signal)
+            fd_signal = signal.savgol_filter(fd_signal, 21, 3)
+            sd_signal = np.diff(fd_signal)
+            sd_signal = sd_signal / np.max(sd_signal)
+ 
+            rise_idx = np.where(sd_signal > 0.3)[0] # Find inflection point of transient rise
+            if rise_idx.size:
+                offset = int(math.ceil(20-(2*freq)) / (1 / self.config.sampling_rate * 1000))
+                full_offset = (int(rise_idx[0]) - math.ceil(offset))
+                start_idx = peak_idx - (math.ceil(initial_offset) - full_offset)
+            else:
+                start_idx = begin_idx # If don't find, use the fixed offset
+
             end_idx = peak_idx + duration
             
             transient_signal = signal_1d[start_idx:end_idx]

@@ -14,7 +14,7 @@ os.environ['JAVA_TOOL_OPTIONS'] = '--enable-native-access=ALL-UNNAMED'
 
 import sys
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import matplotlib
@@ -285,7 +285,7 @@ class ConfigPanel(QWidget):
         self.peak_prominence.setValue(0.45)
         self.peak_prominence.setDecimals(2)
         self.peak_prominence.setSingleStep(0.05)
-        peak_layout.addRow("Prominence Ratio:", self.peak_prominence)
+        peak_layout.addRow("Prominence Single:", self.peak_prominence)
         
         self.min_peak_distance = QSpinBox()
         self.min_peak_distance.setRange(10, 1000)
@@ -356,7 +356,7 @@ class ConfigPanel(QWidget):
             show_images=self.show_images.isChecked(),
             max_ff0=self.max_ff0.value(),
             export_csv=self.export_csv.isChecked(),
-            peak_prominence_ratio=self.peak_prominence.value(),
+            peak_prominence_single=self.peak_prominence.value(),
             min_peak_distance=self.min_peak_distance.value()
         )
         self.config_changed.emit(config)
@@ -374,7 +374,7 @@ class ConfigPanel(QWidget):
             show_images=self.show_images.isChecked(),
             max_ff0=self.max_ff0.value(),
             export_csv=self.export_csv.isChecked(),
-            peak_prominence_ratio=self.peak_prominence.value(),
+            peak_prominence_single=self.peak_prominence.value(),
             min_peak_distance=self.min_peak_distance.value()
         )
     
@@ -393,7 +393,7 @@ class ConfigPanel(QWidget):
         self.show_images.setChecked(config.show_images)
         self.max_ff0.setValue(config.max_ff0)
         self.export_csv.setChecked(config.export_csv)
-        self.peak_prominence.setValue(config.peak_prominence_ratio)
+        self.peak_prominence.setValue(config.peak_prominence_single)
         self.min_peak_distance.setValue(config.min_peak_distance)
         
         self.blockSignals(False)
@@ -1125,7 +1125,7 @@ class CalciumAnalysisApp(QMainWindow):
             show_images=False,  # Force False to prevent Qt timer issues in worker thread
             max_ff0=config.max_ff0,
             export_csv=config.export_csv,
-            peak_prominence_ratio=config.peak_prominence_ratio,
+            peak_prominence_single=config.peak_prominence_single,
             min_peak_distance=config.min_peak_distance
         )
         
