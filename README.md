@@ -1,4 +1,4 @@
-# Calcium Transient Analysis Framework v3.05 (Aug/2026)
+# Calcium Transient Analysis Framework v3.06 (Nov/2026)
 
 A Python framework for analyzing calcium transients from linescan microscopy images.
 
@@ -6,7 +6,9 @@ A Python framework for analyzing calcium transients from linescan microscopy ima
 - **Modern GUI**: Built with PySide6 for interactive and user-friendly analysis.
 - **Interactive ROI Selection**: Precise control over cell boundaries (Y-axis) and baseline regions (X-axis) with sliders and spinboxes.
 - **Ratio Mode**: Support for multi-channel ratio analysis (e.g., Fura-2 or Ratiometric indicators).
-- **Multi-format Support**: Loads any image supported by Bio-formats, including **ND2 (Nikon)**, **CZI/LSM (Zeiss)**, and standard **TIFF**.
+- **Multi-format Support**: Loads images through [bioio](https://github.com/bioio-devs/bioio) (no Java required): **ND2 (Nikon)**, **CZI (Zeiss)**, **LIF (Leica)**, and standard/OME **TIFF**.
+- **Nikon ND2 linescans**: ND2 files store the linescan split into frames; they are automatically concatenated along time and rotated 90° to the left before analysis.
+- **Fast & Responsive**: OpenCV median filter (~25x faster), downsampled image display, and blitted ROI lines (moving ROI lines takes ~6 ms instead of ~400 ms).
 - **Peak Detection**: Uses scipy's `find_peaks` with prominence-based detection.
 - **Synchrony Analysis**: Spatial synchrony analysis with activation delay maps (single-wavelength mode).
 - **Export Options**: Automatic CSV export of all kinetic parameters.
@@ -16,9 +18,13 @@ A Python framework for analyzing calcium transients from linescan microscopy ima
 ### Requirements
 
 ```bash
-pip install numpy scipy matplotlib scikit-image pims jpype1 PySide6 seaborn
+mamba install -n basic numpy scipy matplotlib scikit-image opencv bioio bioio-nd2 bioio-tifffile bioio-ome-tiff bioio-czi bioio-lif pyside6 seaborn
 ```
-The code uses `pims.Bioformats` which requires Java. Make sure you have Java installed.
+Run the software in your environment, e.g. `mamba run -n basic python main_gui.py`.
+
+`opencv` is optional: without it the median filter falls back to scikit-image (much slower). Image loading uses `bioio` plugins, so install the plugin for each format you need (Java is **not** required).
+
+**Pixel size:** it is read from the file metadata (`physical_pixel_sizes.X`, in µm). If a file has none (e.g. some exported TIFFs), 1.0 is used and a warning is printed, so distance axes are then in pixels.
 
 ## 🚀 Usage
 
@@ -60,7 +66,7 @@ The framework uses `ca_analysis_config.json` to persist settings.
 Main class that manages the complete analysis workflow, from loading to export.
 
 ### 2. `CalciumImage`
-Handles Bio-formats loading, median filtering, and ROI-based normalization (F/F0).
+Handles bioio loading (including ND2 frame concatenation/rotation), median filtering, and ROI-based normalization (F/F0).
 
 ### 3. `CalciumTransient`
 Analyzes individual transients to extract:
@@ -87,9 +93,7 @@ Analyzes individual transients to extract:
 
 \* Synchrony metrics available in `'single'` mode.
 
-## ⚠️ Java Warnings
-If you see Java native access warnings:
-```
-WARNING: A restricted method in java.lang.System has been called
-```
-The code automatically suppresses these by setting `JAVA_TOOL_OPTIONS`.
+## ⚡ Performance Notes
+Typical 1024 x 13312 ND2 linescan, load + filter: ~18 s (Bio-Formats + scikit-image) -> ~1 s (bioio + OpenCV), with bit-identical pixel data.
+- The displayed image is block-averaged along time (~2000 columns) for speed; analysis always uses the full-resolution data.
+- Zoom/pan still re-renders the image; ROI line changes do not.

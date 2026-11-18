@@ -17,7 +17,8 @@ import matplotlib.pyplot as plt
 from scipy import signal
 import skimage.filters as filters
 import skimage.morphology as morphology
-import pims, math
+import math
+from bioio import BioImage
 
 from plot_style import apply_calcium_style
 
@@ -70,36 +71,21 @@ class CalciumImage:
         self.filepath = Path(filepath)
         self.config = config
         
-        # Load image
-        self._image = pims.Bioformats(str(filepath))
-        self.metadata = self._image.metadata
+        # Load image with bioio (one API and OME-style metadata for all formats)
+        reader = None
+        if self.filepath.suffix.lower() == ".nd2":
+            import bioio_nd2  # skip plugin auto-detection
+            reader = bioio_nd2.Reader
+        self._bio = BioImage(str(filepath), reader=reader)
+        self.metadata = self._bio.metadata
+        self.voxel_size = self._read_voxel_size()  # um
 
-
-        
-        # Extract calcium fluorescence channel
-        if config.mode == 'single':          
-            if self._image.shape[0] > 1:
-                self.raw_data = np.array(self._image[config.fluo_index])
-            else:
-                self.raw_data = np.array(self._image[0])
-            
-            if self.raw_data.shape[0] > self.raw_data.shape[1]:
-                self.raw_data = np.transpose(self.raw_data, (1, 0))
-
+        if config.mode == 'single':
+            self.raw_data = self._read_linescan(config.fluo_index)
         elif config.mode == 'ratio':
-            if self._image.shape[0] > 1:
-                self.numerator = np.array(self._image[config.numerator_index])
-                self.denominator = np.array(self._image[config.denominator_index])
-            else:
-                self.numerator = np.array(self._image[0])
-                self.denominator = np.array(self._image[1])
-            
-            if self.numerator.shape[0] > self.numerator.shape[1]:
-                self.numerator = np.transpose(self.numerator, (1, 0))
-                self.denominator = np.transpose(self.denominator, (1, 0))
+            self.numerator = self._read_linescan(config.numerator_index)
+            self.denominator = self._read_linescan(config.denominator_index)
 
-        self.voxel_size = self.metadata.PixelsPhysicalSizeX(0)  # μm
-        
         # Processed data (will be set during preprocessing)
         self.filtered_data: Optional[np.ndarray] = None
         self.cropped_data: Optional[np.ndarray] = None
@@ -111,15 +97,59 @@ class CalciumImage:
         self.baseline_limits: Optional[Tuple[int, int]] = None
         self.baseline_value: Optional[float] = None
         
+    def _read_voxel_size(self) -> float:
+        """Physical pixel size along the spatial axis (um), from the file metadata."""
+        size = self._bio.physical_pixel_sizes.X
+        if not size:
+            print(f'Warning: no pixel size in metadata of {self.filepath.name}; using 1.0')
+            return 1.0
+        return float(size)
+
+    def _read_linescan(self, channel: int) -> np.ndarray:
+        """Return one channel as a 2D (space, time) array.
+
+        ND2 (Nikon): the linescan is split into frames; they are concatenated
+        along time and rotated 90 degrees to the left.
+        Other formats: single concatenated image, transposed to (space, time)
+        when stored as (time, space).
+        """
+        dims = self._bio.dims
+        is_nd2 = self.filepath.suffix.lower() == '.nd2'
+
+        if dims.C > 1:
+            data = self._bio.get_image_data('TYX', C=channel, Z=0)
+        elif dims.T > 1 and not is_nd2:
+            # Channels stored as frames (e.g. plain multi-page TIFF)
+            data = self._bio.get_image_data('TYX', C=0, Z=0, T=channel)[np.newaxis]
+        else:
+            data = self._bio.get_image_data('TYX', C=0, Z=0)
+
+        full = np.concatenate(list(data), axis=0)  # frames -> (time, space)
+        if is_nd2:
+            return np.rot90(full, k=1).copy()
+        if full.shape[0] > full.shape[1]:
+            full = full.T
+        return np.ascontiguousarray(full)
+
+    @staticmethod
+    def _median(img: np.ndarray, k: int) -> np.ndarray:
+        """Median filter; uses OpenCV (~100x faster, identical result) when possible."""
+        if k in (3, 5):
+            try:
+                import cv2
+                return cv2.medianBlur(np.ascontiguousarray(img), k)
+            except Exception:
+                pass
+        return filters.median(img, morphology.footprint_rectangle((k, k)))
+
     def apply_median_filter(self) -> 'CalciumImage':
         """Apply median filter to reduce noise."""
         kernel_size = self.config.filter_kernelsize
-        footprint = morphology.footprint_rectangle((kernel_size, kernel_size))
         if self.config.mode == 'single':
-            self.filtered_data = filters.median(self.raw_data, footprint)
+            self.filtered_data = self._median(self.raw_data, kernel_size)
         elif self.config.mode == 'ratio':
-            self.filtered_num = filters.median(self.numerator, footprint)
-            self.filtered_den = filters.median(self.denominator, footprint)
+            self.filtered_num = self._median(self.numerator, kernel_size)
+            self.filtered_den = self._median(self.denominator, kernel_size)
             self.filtered_data = self.filtered_num / self.filtered_den
         return self
     

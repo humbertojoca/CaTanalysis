@@ -39,6 +39,67 @@ from plot_style import apply_calcium_style
 from config_manager import ConfigManager
 
 
+def downsample_for_display(data: np.ndarray, max_cols: int = 2000) -> np.ndarray:
+    """Block-average along the time (column) axis so imshow stays fast.
+
+    Display only: coordinates stay valid because the caller sets `extent`
+    to the full-resolution size. Analysis always uses the full data.
+    """
+    h, w = data.shape
+    step = w // max_cols
+    if step < 2:
+        return data
+    w2 = (w // step) * step
+    return data[:, :w2].reshape(h, w2 // step, step).mean(axis=2, dtype=np.float32)
+
+
+class ROILineOverlay:
+    """Draws ROI lines with blitting so moving them never redraws the image.
+
+    The (expensive) image is rendered once and cached; the lines are
+    animated artists painted on top of the cached background.
+    """
+
+    def __init__(self, canvas: 'MplCanvas'):
+        self.canvas = canvas
+        self.bg = None
+        self.lines = {}  # key -> list of Line2D
+        canvas.mpl_connect('draw_event', self._on_draw)
+
+    def _on_draw(self, event):
+        # Full redraw happened (load, zoom, pan, resize): re-cache background
+        self.bg = self.canvas.copy_from_bbox(self.canvas.figure.bbox)
+        self._draw_lines()
+
+    def _draw_lines(self):
+        ax = self.canvas.axes
+        for group in self.lines.values():
+            for line in group:
+                ax.draw_artist(line)
+
+    def reset(self):
+        """Forget all lines (call after axes.clear())."""
+        self.lines = {}
+        self.bg = None
+
+    def set_lines(self, key: str, orientation: str, positions, **style):
+        """Replace the line group `key`. orientation: 'h' (axhline) or 'v' (axvline)."""
+        ax = self.canvas.axes
+        for line in self.lines.get(key, []):
+            line.remove()
+        make = ax.axhline if orientation == 'h' else ax.axvline
+        self.lines[key] = [make(pos, animated=True, **style) for pos in positions]
+        self.update()
+
+    def update(self):
+        if self.bg is None:
+            self.canvas.draw_idle()
+            return
+        self.canvas.restore_region(self.bg)
+        self._draw_lines()
+        self.canvas.blit(self.canvas.figure.bbox)
+
+
 class AnalysisWorker(QObject):
     """Worker thread for running calcium analysis without blocking the UI."""
     
@@ -820,6 +881,7 @@ class CalciumAnalysisApp(QMainWindow):
         
         # Image canvas
         self.image_canvas = MplCanvas(self, width=10, height=6)
+        self.roi_overlay = ROILineOverlay(self.image_canvas)
         image_layout.addWidget(NavigationToolbar(self.image_canvas, self))
         image_layout.addWidget(self.image_canvas)
         
@@ -970,16 +1032,20 @@ class CalciumAnalysisApp(QMainWindow):
             # Display filtered image
             ax = self.image_canvas.axes
             ax.clear()
+            self.roi_overlay.reset()
             self.cell_roi_lines = []
             self.baseline_roi_lines = []
             
-            ax.imshow(img.filtered_data, cmap='inferno', aspect='auto',
-                     vmin=0, vmax=np.mean(img.filtered_data) * 10)
+            disp = downsample_for_display(img.filtered_data)
+            ax.imshow(disp, cmap='inferno', aspect='auto', interpolation='nearest',
+                     vmin=0, vmax=np.mean(img.filtered_data) * 10,
+                     extent=(-0.5, width - 0.5, height - 0.5, -0.5))
             ax.set_title(f"Filtered Image: {Path(self.current_file).name}")
             ax.set_xlabel("Time (frames)")
             ax.set_ylabel("Space (pixels)")
             apply_calcium_style()
-            self.image_canvas.draw()
+            ax.set_autoscale_on(False)  # ROI lines must not rescale the view
+            self.image_canvas.draw_idle()
             
             # Enable ROI selection controls
             self.apply_cell_roi_btn.setEnabled(True)
@@ -995,21 +1061,9 @@ class CalciumAnalysisApp(QMainWindow):
         if self.current_image_data is None:
             return
             
-        # Remove old preview lines
-        for line in self.cell_roi_lines:
-            if line in self.image_canvas.axes.lines:
-                line.remove()
-        self.cell_roi_lines = []
-        
-        # Draw red preview lines
-        y_start = self.y_start_spinbox.value()
-        y_end = self.y_end_spinbox.value()
-        
-        line1 = self.image_canvas.axes.axhline(y_start, color='red', linestyle='--', linewidth=2, alpha=0.7)
-        line2 = self.image_canvas.axes.axhline(y_end, color='red', linestyle='--', linewidth=2, alpha=0.7)
-        
-        self.cell_roi_lines = [line1, line2]
-        self.image_canvas.draw()
+        self.roi_overlay.set_lines('cell', 'h',
+                                   (self.y_start_spinbox.value(), self.y_end_spinbox.value()),
+                                   color='red', linestyle='--', linewidth=2, alpha=0.7)
         
     def apply_cell_roi(self):
         """Apply cell ROI and turn lines green."""
@@ -1023,18 +1077,8 @@ class CalciumAnalysisApp(QMainWindow):
             QMessageBox.warning(self, "Invalid ROI", "Y Start must be less than Y End")
             return
             
-        # Remove old lines
-        for line in self.cell_roi_lines:
-            if line in self.image_canvas.axes.lines:
-                line.remove()
-        self.cell_roi_lines = []
-        
-        # Draw green confirmed lines
-        line1 = self.image_canvas.axes.axhline(y_start, color='green', linestyle='-', linewidth=2, alpha=0.8)
-        line2 = self.image_canvas.axes.axhline(y_end, color='green', linestyle='-', linewidth=2, alpha=0.8)
-        
-        self.cell_roi_lines = [line1, line2]
-        self.image_canvas.draw()
+        self.roi_overlay.set_lines('cell', 'h', (y_start, y_end),
+                                   color='green', linestyle='-', linewidth=2, alpha=0.8)
         
         # Store the limits
         self.cell_limits = (y_start, y_end)
@@ -1049,21 +1093,9 @@ class CalciumAnalysisApp(QMainWindow):
         if self.current_image_data is None:
             return
             
-        # Remove old preview lines
-        for line in self.baseline_roi_lines:
-            if line in self.image_canvas.axes.lines:
-                line.remove()
-        self.baseline_roi_lines = []
-        
-        # Draw red preview lines
-        x_start = self.x_start_spinbox.value()
-        x_end = self.x_end_spinbox.value()
-        
-        line1 = self.image_canvas.axes.axvline(x_start, color='red', linestyle='--', linewidth=2, alpha=0.7)
-        line2 = self.image_canvas.axes.axvline(x_end, color='red', linestyle='--', linewidth=2, alpha=0.7)
-        
-        self.baseline_roi_lines = [line1, line2]
-        self.image_canvas.draw()
+        self.roi_overlay.set_lines('baseline', 'v',
+                                   (self.x_start_spinbox.value(), self.x_end_spinbox.value()),
+                                   color='red', linestyle='--', linewidth=2, alpha=0.7)
         
     def apply_baseline_roi(self):
         """Apply baseline ROI and turn lines green."""
@@ -1077,18 +1109,8 @@ class CalciumAnalysisApp(QMainWindow):
             QMessageBox.warning(self, "Invalid ROI", "X Start must be less than X End")
             return
             
-        # Remove old lines
-        for line in self.baseline_roi_lines:
-            if line in self.image_canvas.axes.lines:
-                line.remove()
-        self.baseline_roi_lines = []
-        
-        # Draw green confirmed lines
-        line1 = self.image_canvas.axes.axvline(x_start, color='green', linestyle='-', linewidth=2, alpha=0.8)
-        line2 = self.image_canvas.axes.axvline(x_end, color='green', linestyle='-', linewidth=2, alpha=0.8)
-        
-        self.baseline_roi_lines = [line1, line2]
-        self.image_canvas.draw()
+        self.roi_overlay.set_lines('baseline', 'v', (x_start, x_end),
+                                   color='green', linestyle='-', linewidth=2, alpha=0.8)
         
         # Store the limits
         self.baseline_limits = (x_start, x_end)
