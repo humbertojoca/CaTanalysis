@@ -8,9 +8,6 @@ Author: hjoca
 Date: 2026-01-21
 """
 
-import os
-# Suppress Java native access warnings from JPype/Bioformats
-os.environ['JAVA_TOOL_OPTIONS'] = '--enable-native-access=ALL-UNNAMED'
 
 import sys
 from pathlib import Path

@@ -8,9 +8,6 @@ Author: hjoca
 Date: 2026-01-13
 """
 
-import os
-# Suppress Java native access warnings from JPype/Bioformats
-os.environ['JAVA_TOOL_OPTIONS'] = '--enable-native-access=ALL-UNNAMED'
 
 import sys
 import tkinter as tk
