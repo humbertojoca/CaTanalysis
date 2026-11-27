@@ -8,7 +8,7 @@ Author: hjoca
 Refactored: 2026-01-13
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional, Tuple, List
 from pathlib import Path
 
@@ -32,6 +32,7 @@ class AnalysisConfig:
     numerator_index: int = 0
     denominator_index: int = 1
     linescan_speed: float = 1.87  # ms per line
+    use_file_linescan_speed: bool = True  # ND2: take the line time from the file timestamps
     filter_kernelsize: int = 5
     
     # Analysis parameters
@@ -47,14 +48,26 @@ class AnalysisConfig:
     # Visualization
     show_images: bool = True
     max_ff0: float = 8.0
+    keep_roi: bool = False  # GUI: keep ROI positions when loading the next file
     
     # Export
     export_csv: bool = False
+    export_signal_png: bool = False    # GUI: save <name>_profile.png
+    export_linescan_png: bool = False  # GUI: save <name>_linescan.png
     
     @property
     def sampling_rate(self) -> float:
         """Calculate sampling rate from linescan speed."""
         return 1 / self.linescan_speed * 1000
+
+
+def results_csv_path(filepath) -> Path:
+    """CSV path where results for an image are exported (same folder, same stem).
+
+    Uses the full stem so names with dots (e.g. 'cell1.qc3003.nd2') do not collide.
+    """
+    p = Path(filepath)
+    return p.with_name(p.stem + '.csv')
 
 
 class CalciumImage:
@@ -80,6 +93,12 @@ class CalciumImage:
         self.metadata = self._bio.metadata
         self.voxel_size = self._read_voxel_size()  # um
 
+        # ND2: line time (ms/line) calculated from the frame timestamps, if available
+        self.file_line_time_ms: Optional[float] = self._read_nd2_line_time()
+        if config.use_file_linescan_speed and self.file_line_time_ms:
+            # per-image copy: never mutate the caller's config
+            self.config = replace(config, linescan_speed=self.file_line_time_ms)
+
         if config.mode == 'single':
             self.raw_data = self._read_linescan(config.fluo_index)
         elif config.mode == 'ratio':
@@ -104,6 +123,39 @@ class CalciumImage:
             print(f'Warning: no pixel size in metadata of {self.filepath.name}; using 1.0')
             return 1.0
         return float(size)
+
+    def _read_nd2_line_time(self) -> Optional[float]:
+        """Line time (ms/line) of a Nikon ND2 linescan, from the frame timestamps.
+
+        line time = frame-to-frame interval / lines per frame. Only trusted when the
+        frames are acquired back to back (time loop period 0) and evenly spaced;
+        otherwise (or for single-frame files) returns None.
+        """
+        if self.filepath.suffix.lower() != '.nd2':
+            return None
+        try:
+            import warnings
+            import nd2
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                with nd2.ND2File(str(self.filepath)) as f:
+                    lines = f.sizes.get('Y')
+                    times = np.array([e['Time [s]'] for e in f.events()], dtype=float) * 1000.0
+                    # an explicit delay between frames means the interval is not the scan time
+                    for loop in f.experiment or []:
+                        for period in getattr(getattr(loop, 'parameters', None), 'periods', []):
+                            if getattr(period, 'periodMs', 0) and period.periodMs > 0:
+                                return None
+            if not lines or len(times) < 2:
+                return None
+            steps = np.diff(times)
+            mean = float(np.mean(steps))
+            if mean <= 0 or float(np.std(steps)) / mean > 0.01:
+                return None
+            return mean / lines
+        except Exception as exc:
+            print(f'Could not read line time from {self.filepath.name}: {exc}')
+            return None
 
     def _read_linescan(self, channel: int) -> np.ndarray:
         """Return one channel as a 2D (space, time) array.
@@ -442,13 +494,18 @@ class CalciumAnalyzer:
             config: Analysis configuration. If None, uses defaults.
         """
         self.config = config or AnalysisConfig()
+        self._base_config = self.config  # as given by the user (never modified)
         self.image: Optional[CalciumImage] = None
         self.transients: List[CalciumTransient] = []
         self.results: Optional[np.ndarray] = None
         
     def load_image(self, filepath: str) -> 'CalciumAnalyzer':
         """Load and preprocess calcium image."""
-        self.image = CalciumImage(filepath, self.config)
+        self.image = CalciumImage(filepath, self._base_config)
+        # the image may carry a per-file config (e.g. line time read from an ND2)
+        self.config = self.image.config
+        if self.image.file_line_time_ms and self.config is not self._base_config:
+            print(f'Linescan speed from file: {self.config.linescan_speed:.4f} ms/line')
         self.image.apply_median_filter()
         return self
     
@@ -635,16 +692,15 @@ class CalciumAnalyzer:
         
         # Determine output path
         if output_path is None:
-            output_path = self.image.filepath.parent / self.image.filepath.stem
+            csv_path = results_csv_path(self.image.filepath)
         else:
-            output_path = Path(output_path)
+            csv_path = Path(output_path).with_suffix('.csv')
         
         # Prepare header
         header = TransientMetrics.get_header(self.config.analyze_synchrony)
         
         # Export CSV
         if self.config.export_csv:
-            csv_path = output_path.with_suffix('.csv')
             np.savetxt(csv_path, self.results, delimiter=',',
                       header=','.join(header), fmt='%1.3f', comments='')
             print(f"Results exported to {csv_path}")

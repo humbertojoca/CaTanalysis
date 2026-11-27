@@ -26,12 +26,17 @@ from PySide6.QtWidgets import (
     QPushButton, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox, 
     QGroupBox, QFileDialog, QTableWidget, QTableWidgetItem, 
     QTabWidget,  QProgressBar, QStatusBar, QToolBar, QMessageBox, 
-    QScrollArea, QFormLayout, QTextEdit, QSlider
+    QScrollArea, QFormLayout, QTextEdit, QSlider,
+    QDockWidget, QLineEdit, QTreeView, QLabel
 )
-from PySide6.QtCore import Qt, Signal,  Slot, QObject
-from PySide6.QtGui import QAction
+from PySide6.QtCore import Qt, Signal,  Slot, QObject, QDir, QSettings
+from PySide6.QtGui import QAction, QBrush, QColor
+try:
+    from PySide6.QtGui import QFileSystemModel
+except ImportError:  # older PySide6 versions
+    from PySide6.QtWidgets import QFileSystemModel
 
-from ca_analyzer import CalciumAnalyzer, AnalysisConfig
+from ca_analyzer import CalciumAnalyzer, AnalysisConfig, results_csv_path
 from plot_style import apply_calcium_style
 from config_manager import ConfigManager
 
@@ -95,6 +100,198 @@ class ROILineOverlay:
         self.canvas.restore_region(self.bg)
         self._draw_lines()
         self.canvas.blit(self.canvas.figure.bbox)
+
+
+IMAGE_EXTENSIONS = ('.nd2', '.tif', '.tiff', '.czi', '.lif')
+
+
+class MarkedFileModel(QFileSystemModel):
+    """File model that marks images which already have a results CSV (green + check)."""
+
+    DONE_BG = QColor(198, 232, 198)
+    DONE_FG = QColor(20, 70, 20)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._csv_cache = {}  # folder -> set of lowercase csv file names
+
+    def refresh_marks(self):
+        self._csv_cache.clear()
+
+    def is_done(self, path: str) -> bool:
+        p = Path(path)
+        if p.suffix.lower() not in IMAGE_EXTENSIONS:
+            return False
+        names = self._csv_cache.get(p.parent)
+        if names is None:
+            try:
+                names = {f.name.lower() for f in p.parent.iterdir() if f.suffix.lower() == '.csv'}
+            except OSError:
+                names = set()
+            self._csv_cache[p.parent] = names
+        return results_csv_path(p).name.lower() in names
+
+    def data(self, index, role=Qt.DisplayRole):
+        if index.column() == 0 and role in (Qt.DisplayRole, Qt.BackgroundRole,
+                                            Qt.ForegroundRole, Qt.ToolTipRole):
+            if not self.isDir(index) and self.is_done(self.filePath(index)):
+                if role == Qt.DisplayRole:
+                    return "\u2713 " + super().data(index, role)
+                if role == Qt.BackgroundRole:
+                    return QBrush(self.DONE_BG)
+                if role == Qt.ForegroundRole:
+                    return QBrush(self.DONE_FG)
+                return "Results CSV found: " + results_csv_path(self.filePath(index)).name
+        return super().data(index, role)
+
+
+class FileBrowserDock(QDockWidget):
+    """Docked folder browser to open images quickly and step through a folder."""
+
+    file_activated = Signal(str)  # emitted on double-click / Enter on a file
+
+    def __init__(self, parent=None):
+        super().__init__("Files", parent)
+        self.setObjectName("FileBrowserDock")
+        self.settings = QSettings("CaTanalysis", "CaTanalysis")
+        self.folder = ""
+
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # Folder bar
+        bar = QHBoxLayout()
+        self.up_btn = QPushButton("\u2191")
+        self.up_btn.setToolTip("Parent folder")
+        self.up_btn.setFixedWidth(30)
+        self.up_btn.clicked.connect(self.go_up)
+        self.path_edit = QLineEdit()
+        self.path_edit.setPlaceholderText("Folder...")
+        self.path_edit.editingFinished.connect(lambda: self.set_folder(self.path_edit.text()))
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self.browse)
+        bar.addWidget(self.up_btn)
+        bar.addWidget(self.path_edit)
+        bar.addWidget(browse_btn)
+        layout.addLayout(bar)
+
+        # Tree (name column only), filtered to supported image formats
+        self.model = MarkedFileModel(self)
+        self.model.setFilter(QDir.AllDirs | QDir.Files | QDir.NoDotAndDotDot)
+        self.model.setNameFilterDisables(False)  # hide non-matching files
+        self.tree = QTreeView()
+        self.tree.setModel(self.model)
+        for col in (1, 2, 3):
+            self.tree.setColumnHidden(col, True)
+        self.tree.setHeaderHidden(True)
+        self.tree.activated.connect(self._on_activated)
+        layout.addWidget(self.tree)
+
+        self.show_all_chk = QCheckBox("Show all files")
+        self.show_all_chk.toggled.connect(self._apply_filter)
+        layout.addWidget(self.show_all_chk)
+
+        # Prev / Next
+        nav = QHBoxLayout()
+        self.prev_btn = QPushButton("\u25c0 Prev")
+        self.next_btn = QPushButton("Next \u25b6")
+        self.prev_btn.clicked.connect(lambda: self.step(-1))
+        self.next_btn.clicked.connect(lambda: self.step(+1))
+        self.position_label = QLabel("")
+        nav.addWidget(self.prev_btn)
+        nav.addWidget(self.position_label, 1, Qt.AlignCenter)
+        nav.addWidget(self.next_btn)
+        layout.addLayout(nav)
+
+        self.setWidget(body)
+        self.setMinimumWidth(240)
+        self._apply_filter()
+
+        last = self.settings.value("last_folder", "")
+        self.set_folder(last if last and Path(last).is_dir() else str(Path.home()))
+
+    # -- folder handling ---------------------------------------------------
+    def _apply_filter(self):
+        patterns = [] if self.show_all_chk.isChecked() else [f"*{e}" for e in IMAGE_EXTENSIONS]
+        self.model.setNameFilters(patterns)
+
+    def set_folder(self, path: str):
+        path = str(Path(path)) if path else ""
+        if not path or not Path(path).is_dir():
+            self.path_edit.setText(self.folder)
+            return
+        self.folder = path
+        self.model.setRootPath(path)
+        self.tree.setRootIndex(self.model.index(path))
+        self.path_edit.setText(path)
+        self.settings.setValue("last_folder", path)
+        self._update_position()
+
+    def browse(self):
+        path = QFileDialog.getExistingDirectory(self, "Choose folder", self.folder)
+        if path:
+            self.set_folder(path)
+
+    def refresh_marks(self):
+        """Re-check which images have results (call after an analysis finishes)."""
+        self.model.refresh_marks()
+        self.tree.viewport().update()
+        self._update_position()
+
+    def go_up(self):
+        if self.folder:
+            self.set_folder(str(Path(self.folder).parent))
+
+    # -- files -------------------------------------------------------------
+    def files(self):
+        """Image files in the current folder, sorted by name."""
+        if not self.folder:
+            return []
+        try:
+            return sorted((f for f in Path(self.folder).iterdir()
+                           if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS),
+                          key=lambda f: f.name.lower())
+        except OSError:
+            return []
+
+    def _on_activated(self, index):
+        if not self.model.isDir(index):
+            self.file_activated.emit(self.model.filePath(index))
+
+    def select_file(self, path: str):
+        """Highlight `path` (switching folder if needed) without loading it."""
+        self.current = str(Path(path))
+        parent = str(Path(path).parent)
+        if Path(parent) != Path(self.folder or "."):
+            self.set_folder(parent)
+        index = self.model.index(path)
+        self.tree.setCurrentIndex(index)
+        self.tree.scrollTo(index)
+        self._update_position()
+
+    def _update_position(self):
+        files = self.files()
+        names = [str(f) for f in files]
+        cur = str(Path(getattr(self, "current", ""))) if getattr(self, "current", "") else ""
+        done = sum(self.model.is_done(n) for n in names)
+        if cur in names:
+            self.position_label.setText(f"{names.index(cur) + 1} / {len(names)}  ({done} done)")
+        else:
+            self.position_label.setText(f"{len(names)} files ({done} done)")
+
+    def step(self, delta: int):
+        files = [str(f) for f in self.files()]
+        if not files:
+            return
+        cur = str(Path(getattr(self, "current", ""))) if getattr(self, "current", "") else ""
+        if cur in files:
+            i = files.index(cur) + delta
+            if not 0 <= i < len(files):
+                return
+        else:
+            i = 0 if delta > 0 else len(files) - 1
+        self.file_activated.emit(files[i])
 
 
 class AnalysisWorker(QObject):
@@ -306,9 +503,15 @@ class ConfigPanel(QWidget):
         self.linescan_speed = QDoubleSpinBox()
         self.linescan_speed.setRange(0.1, 100.0)
         self.linescan_speed.setValue(1.87)
-        self.linescan_speed.setDecimals(2)
+        self.linescan_speed.setDecimals(4)
         self.linescan_speed.setSuffix(" ms/line")
         img_layout.addRow("Linescan Speed:", self.linescan_speed)
+
+        self.use_file_speed = QCheckBox()
+        self.use_file_speed.setChecked(True)
+        self.use_file_speed.setToolTip("ND2 files: read the line time from the file timestamps "
+                                       "and override the value above (other files use the value above)")
+        img_layout.addRow("Linescan speed from file:", self.use_file_speed)
         
         self.filter_kernel = QSpinBox()
         self.filter_kernel.setRange(3, 15)
@@ -366,6 +569,11 @@ class ConfigPanel(QWidget):
         self.max_ff0.setValue(8.0)
         self.max_ff0.setDecimals(1)
         viz_layout.addRow("Max F/F0:", self.max_ff0)
+
+        self.keep_roi = QCheckBox()
+        self.keep_roi.setToolTip("Keep the applied ROI positions when loading the next file "
+                                 "(otherwise ROIs are reset on every load)")
+        viz_layout.addRow("Keep ROI positions:", self.keep_roi)
         
         viz_group.setLayout(viz_layout)
         layout.addWidget(viz_group)
@@ -377,6 +585,14 @@ class ConfigPanel(QWidget):
         self.export_csv = QCheckBox()
         self.export_csv.setChecked(True)
         export_layout.addRow("Export CSV:", self.export_csv)
+
+        self.export_signal_png = QCheckBox()
+        self.export_signal_png.setToolTip("Save the signal plot as <filename>_profile.png")
+        export_layout.addRow("Signal Profile (PNG):", self.export_signal_png)
+
+        self.export_linescan_png = QCheckBox()
+        self.export_linescan_png.setToolTip("Save the normalized linescan as <filename>_linescan.png")
+        export_layout.addRow("Normalized Linescan (PNG):", self.export_linescan_png)
         
         export_group.setLayout(export_layout)
         layout.addWidget(export_group)
@@ -400,6 +616,10 @@ class ConfigPanel(QWidget):
         self.peak_prominence.valueChanged.connect(self.emit_config)
         self.min_peak_distance.valueChanged.connect(self.emit_config)
         self.max_ff0.valueChanged.connect(self.emit_config)
+        self.keep_roi.stateChanged.connect(self.emit_config)
+        self.use_file_speed.stateChanged.connect(self.emit_config)
+        self.export_signal_png.stateChanged.connect(self.emit_config)
+        self.export_linescan_png.stateChanged.connect(self.emit_config)
         
     def emit_config(self):
         """Emit the current configuration."""
@@ -413,7 +633,11 @@ class ConfigPanel(QWidget):
             analyze_synchrony=self.analyze_synchrony.isChecked(),
             show_images=self.show_images.isChecked(),
             max_ff0=self.max_ff0.value(),
+            keep_roi=self.keep_roi.isChecked(),
+            use_file_linescan_speed=self.use_file_speed.isChecked(),
             export_csv=self.export_csv.isChecked(),
+            export_signal_png=self.export_signal_png.isChecked(),
+            export_linescan_png=self.export_linescan_png.isChecked(),
             peak_prominence_single=self.peak_prominence.value(),
             min_peak_distance=self.min_peak_distance.value()
         )
@@ -431,7 +655,11 @@ class ConfigPanel(QWidget):
             analyze_synchrony=self.analyze_synchrony.isChecked(),
             show_images=self.show_images.isChecked(),
             max_ff0=self.max_ff0.value(),
+            keep_roi=self.keep_roi.isChecked(),
+            use_file_linescan_speed=self.use_file_speed.isChecked(),
             export_csv=self.export_csv.isChecked(),
+            export_signal_png=self.export_signal_png.isChecked(),
+            export_linescan_png=self.export_linescan_png.isChecked(),
             peak_prominence_single=self.peak_prominence.value(),
             min_peak_distance=self.min_peak_distance.value()
         )
@@ -450,7 +678,11 @@ class ConfigPanel(QWidget):
         self.analyze_synchrony.setChecked(config.analyze_synchrony)
         self.show_images.setChecked(config.show_images)
         self.max_ff0.setValue(config.max_ff0)
+        self.keep_roi.setChecked(config.keep_roi)
+        self.use_file_speed.setChecked(config.use_file_linescan_speed)
         self.export_csv.setChecked(config.export_csv)
+        self.export_signal_png.setChecked(config.export_signal_png)
+        self.export_linescan_png.setChecked(config.export_linescan_png)
         self.peak_prominence.setValue(config.peak_prominence_single)
         self.min_peak_distance.setValue(config.min_peak_distance)
         
@@ -550,6 +782,32 @@ class ResultsPanel(QWidget):
         # Update summary
         self.update_summary()
         
+    def save_figures(self, signal: bool, linescan: bool) -> list:
+        """Save the signal / linescan plots as PNG next to the image file.
+
+        Files: <image name>_profile.png and <image name>_linescan.png
+        Returns the list of saved paths.
+        """
+        if self.analyzer is None or self.analyzer.image is None:
+            return []
+        src = Path(self.analyzer.image.filepath)
+        saved = []
+        for enabled, canvas, suffix in ((signal, self.signal_canvas, '_profile'),
+                                        (linescan, self.linescan_canvas, '_linescan')):
+            if not enabled:
+                continue
+            out = src.with_name(src.stem + suffix + '.png')
+            fig = canvas.fig
+            old_size = fig.get_size_inches().copy()
+            try:
+                fig.set_size_inches(10, 5, forward=False)  # consistent output size
+                fig.savefig(out, dpi=300, bbox_inches='tight')
+                saved.append(out)
+            finally:
+                fig.set_size_inches(old_size, forward=False)
+                canvas.draw_idle()
+        return saved
+
     def plot_signal(self):
         """Plot the F/F0 signal with detected transients."""
         if self.analyzer is None:
@@ -729,6 +987,11 @@ class CalciumAnalysisApp(QMainWindow):
         
         # Load configuration into UI after UI is initialized
         self.config_panel.set_config(self.config)
+
+        # Remember the manually chosen linescan speed (ND2 files may override the box)
+        self._manual_speed = self.config.linescan_speed
+        self._setting_speed = False
+        self.config_panel.linescan_speed.valueChanged.connect(self._on_speed_edited)
         
         # Update status bar with config file path
         self.status_bar.showMessage(f"Configuration loaded from: {self.config_manager.get_config_path()}")
@@ -743,6 +1006,12 @@ class CalciumAnalysisApp(QMainWindow):
         
         # Create toolbar
         self.create_toolbar()
+
+        # File explorer dock
+        self.file_dock = FileBrowserDock(self)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.file_dock)
+        self.file_dock.file_activated.connect(self.open_path)
+        self.view_menu.addAction(self.file_dock.toggleViewAction())
         
         # Create central widget with tabs
         central_widget = QWidget()
@@ -918,6 +1187,16 @@ class CalciumAnalysisApp(QMainWindow):
         open_action.triggered.connect(self.open_file)
         file_menu.addAction(open_action)
         
+        prev_action = QAction("&Previous File", self)
+        prev_action.setShortcut("Alt+Left")
+        prev_action.triggered.connect(lambda: self.file_dock.step(-1))
+        file_menu.addAction(prev_action)
+
+        next_action = QAction("&Next File", self)
+        next_action.setShortcut("Alt+Right")
+        next_action.triggered.connect(lambda: self.file_dock.step(+1))
+        file_menu.addAction(next_action)
+
         file_menu.addSeparator()
         
         export_action = QAction("&Export Results...", self)
@@ -932,6 +1211,8 @@ class CalciumAnalysisApp(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
+        self.view_menu = menubar.addMenu("&View")
+
         # Configuration menu
         config_menu = menubar.addMenu("&Configuration")
         
@@ -983,13 +1264,18 @@ class CalciumAnalysisApp(QMainWindow):
         filename, _ = QFileDialog.getOpenFileName(
             self,
             "Open Image",
-            "",
+            self.file_dock.folder,
             "TIFF Images (*.tif *.tiff);;Nikon Images (*.nd2);;Zeiss Images (*.czi *.lsm);;All Files (*.*)"
         )
         
         if filename:
-            self.current_file = filename
-            self.load_image()
+            self.open_path(filename)
+
+    def open_path(self, filename: str):
+        """Load `filename` and sync the file explorer."""
+        self.current_file = filename
+        self.file_dock.select_file(filename)
+        self.load_image()
             
     def load_image(self):
         """Load and display the current image."""
@@ -1003,7 +1289,25 @@ class CalciumAnalysisApp(QMainWindow):
             from ca_analyzer import CalciumImage
             img = CalciumImage(self.current_file, self.config)
             img.apply_median_filter()
+
+            # ND2: show the line time read from the file in the config panel
+            speed_note = ""
+            is_nd2 = self.current_file.lower().endswith('.nd2')
+            if self.config.use_file_linescan_speed and img.file_line_time_ms:
+                self._set_speed_box(round(img.file_line_time_ms, 4))
+                speed_note = f" - line time {img.file_line_time_ms:.4f} ms (from file)"
+            else:
+                # back to the value typed by the user (not the previous file's value)
+                self._set_speed_box(self._manual_speed)
+                if is_nd2 and img.file_line_time_ms:
+                    speed_note = (f" - line time {self._manual_speed:g} ms (manual; "
+                                  f"file says {img.file_line_time_ms:.4f} ms)")
+                elif is_nd2:
+                    speed_note = f" - line time {self._manual_speed:g} ms (manual; not in file)"
             
+            # Remember applied ROIs of the previous image (used if "Keep ROI positions")
+            prev_cell, prev_base = self.cell_limits, self.baseline_limits
+
             # Store image data for ROI visualization
             self.current_image_data = img.filtered_data
             
@@ -1015,6 +1319,8 @@ class CalciumAnalysisApp(QMainWindow):
             self.y_start_spinbox.setMaximum(height - 1)
             self.y_end_slider.setMaximum(height - 1)
             self.y_end_spinbox.setMaximum(height - 1)
+            self.y_start_slider.setValue(0)
+            self.y_start_spinbox.setValue(0)
             self.y_end_slider.setValue(min(100, height - 1))
             self.y_end_spinbox.setValue(min(100, height - 1))
             
@@ -1023,6 +1329,8 @@ class CalciumAnalysisApp(QMainWindow):
             self.x_start_spinbox.setMaximum(width - 1)
             self.x_end_slider.setMaximum(width - 1)
             self.x_end_spinbox.setMaximum(width - 1)
+            self.x_start_slider.setValue(0)
+            self.x_start_spinbox.setValue(0)
             self.x_end_slider.setValue(min(100, width - 1))
             self.x_end_spinbox.setValue(min(100, width - 1))
             
@@ -1033,6 +1341,11 @@ class CalciumAnalysisApp(QMainWindow):
             self.cell_roi_lines = []
             self.baseline_roi_lines = []
             
+            # ROIs are reset on every load (restored below if Keep ROI positions)
+            self.cell_limits = None
+            self.baseline_limits = None
+            self.run_btn.setEnabled(False)
+
             disp = downsample_for_display(img.filtered_data)
             ax.imshow(disp, cmap='inferno', aspect='auto', interpolation='nearest',
                      vmin=0, vmax=np.mean(img.filtered_data) * 10,
@@ -1047,12 +1360,48 @@ class CalciumAnalysisApp(QMainWindow):
             # Enable ROI selection controls
             self.apply_cell_roi_btn.setEnabled(True)
             self.apply_baseline_roi_btn.setEnabled(True)
-            self.status_bar.showMessage(f"Loaded {Path(self.current_file).name}")
+            self.status_bar.showMessage(f"Loaded {Path(self.current_file).name}{speed_note}")
+
+            if self.config_panel.keep_roi.isChecked():
+                self._restore_rois(prev_cell, prev_base, height, width, speed_note)
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load image: {str(e)}")
             self.status_bar.showMessage("Error loading image")
             
+    def _set_speed_box(self, value: float):
+        """Set the linescan speed box programmatically (does not count as a manual edit)."""
+        self._setting_speed = True
+        try:
+            self.config_panel.linescan_speed.setValue(value)
+        finally:
+            self._setting_speed = False
+
+    def _on_speed_edited(self, value: float):
+        if not self._setting_speed:
+            self._manual_speed = value
+
+    def _restore_rois(self, cell, baseline, height, width, speed_note=""):
+        """Re-apply the previous ROIs on the newly loaded image (clamped to its size)."""
+        clamped = False
+        if cell is not None:
+            y0, y1 = (min(v, height - 1) for v in cell)
+            clamped |= (y0, y1) != tuple(cell)
+            self.y_start_slider.setValue(y0); self.y_start_spinbox.setValue(y0)
+            self.y_end_slider.setValue(y1); self.y_end_spinbox.setValue(y1)
+            self.apply_cell_roi()
+        if baseline is not None:
+            x0, x1 = (min(v, width - 1) for v in baseline)
+            clamped |= (x0, x1) != tuple(baseline)
+            self.x_start_slider.setValue(x0); self.x_start_spinbox.setValue(x0)
+            self.x_end_slider.setValue(x1); self.x_end_spinbox.setValue(x1)
+            self.apply_baseline_roi()
+        if cell is not None or baseline is not None:
+            msg = f"Loaded {Path(self.current_file).name}{speed_note} - ROIs kept"
+            if clamped:
+                msg += " (clamped to image size)"
+            self.status_bar.showMessage(msg)
+
     def on_cell_roi_preview(self):
         """Preview cell ROI with red lines."""
         if self.current_image_data is None:
@@ -1138,6 +1487,7 @@ class CalciumAnalysisApp(QMainWindow):
         worker_config = AnalysisConfig(
             fluo_index=config.fluo_index,
             linescan_speed=config.linescan_speed,
+            use_file_linescan_speed=config.use_file_linescan_speed,
             filter_kernelsize=config.filter_kernelsize,
             mode=config.mode,
             analyze_synchrony=config.analyze_synchrony,
@@ -1176,6 +1526,7 @@ class CalciumAnalysisApp(QMainWindow):
         self.run_btn.setEnabled(True)
         
         if success:
+            self.file_dock.refresh_marks()
             self.status_bar.showMessage(message)
             self.tabs.setCurrentIndex(1)  # Switch to results tab
         else:
@@ -1186,6 +1537,15 @@ class CalciumAnalysisApp(QMainWindow):
     def on_results_ready(self, analyzer: CalciumAnalyzer):
         """Display analysis results."""
         self.results_panel.display_results(analyzer)
+
+        cfg = self.config_panel.get_config()
+        if cfg.export_signal_png or cfg.export_linescan_png:
+            try:
+                saved = self.results_panel.save_figures(cfg.export_signal_png, cfg.export_linescan_png)
+                if saved:
+                    self.status_bar.showMessage("Saved: " + ", ".join(p.name for p in saved), 8000)
+            except Exception as e:
+                QMessageBox.warning(self, "Export", f"Could not save figure(s): {e}")
         
     def export_results(self):
         """Export analysis results."""
@@ -1199,6 +1559,8 @@ class CalciumAnalysisApp(QMainWindow):
     def save_configuration(self):
         """Save current configuration to JSON file."""
         config = self.config_panel.get_config()
+        # save the manually chosen speed, not a value read from an ND2 file
+        config.linescan_speed = self._manual_speed
         success = self.config_manager.save_config(config)
         
         if success:

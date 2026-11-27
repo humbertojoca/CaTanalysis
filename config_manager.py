@@ -119,7 +119,9 @@ class ConfigManager:
             'mode', 'analyze_synchrony', 'peak_prominence_ratio',
             'peak_prominence_single', 'peak_prominence_sync',
             'min_peak_distance', 'show_images', 'max_ff0',
-            'export_csv'
+            'export_csv', 'keep_roi',
+            'export_signal_png', 'export_linescan_png',
+            'use_file_linescan_speed'
         }
         
         filtered_dict = {k: v for k, v in config_dict.items() if k in valid_keys}
